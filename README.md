@@ -85,6 +85,7 @@ bun test
 
 - [API Reference](docs/index.md) — full endpoint documentation
 - [Technical Specs](docs/specs.md) — stack, dependencies, architecture
+- [Nostr Integration](docs/nostr.md) — Nostr identity, key custody, event publishing
 - [Tests](docs/tests.md) — testing strategy and coverage
 
 Live docs: `https://api.commonshub.brussels/docs`  
