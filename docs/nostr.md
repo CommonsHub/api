@@ -162,9 +162,115 @@ relay.commonshub.brussels
     └── GET    /admin/allow
 ```
 
-The API manages the allowlist: when a user is created, their npub is added. When deactivated, it's removed. Implementation options:
-- **strfry**: [write policy plugin](https://github.com/hoytech/strfry/blob/master/docs/plugins.md) — script receives each EVENT, checks pubkey
-- **Khatru** (Go): `RejectEvent` hook for pubkey-based filtering
+#### Relay implementation
+
+The relay exposes a small admin API for allowlist management, IP-restricted to the API server. Recommended: build the relay with [Khatru](https://github.com/fiatjaf/khatru) (Go) — it gives full control over accept/reject hooks and makes it easy to add an HTTP admin endpoint alongside the websocket.
+
+Alternative: strfry with a [write policy plugin](https://github.com/hoytech/strfry/blob/master/docs/plugins.md), but adding a custom admin API is harder.
+
+### Allowlist Sync
+
+The API is the source of truth for which npubs are allowed to write. The relay's allowlist is a downstream projection of that data.
+
+#### How the API manages the allowlist
+
+```
+User created (API)
+    │
+    ├── generate keypair
+    ├── encrypt + store nsec
+    ├── store npub in user record
+    └── POST relay.commonshub.brussels/admin/allow { "pubkey": "<hex>" }
+
+User deactivated (API)
+    │
+    └── DELETE relay.commonshub.brussels/admin/allow { "pubkey": "<hex>" }
+
+User exports key (future)
+    │
+    └── npub stays on allowlist (user can now publish directly)
+```
+
+The API calls the relay's admin endpoint synchronously during user lifecycle events. If the relay is down, the API logs the failure and retries — the user's events can still be published (the API publishes on their behalf), but direct publishing won't work until the allowlist is synced.
+
+#### Relay admin API
+
+```
+POST   /admin/allow          Add a pubkey to the allowlist
+DELETE /admin/allow           Remove a pubkey from the allowlist
+GET    /admin/allow           List all allowed pubkeys
+POST   /admin/allow/sync     Full sync — replace entire allowlist
+```
+
+**Authentication:** shared secret via `Authorization: Bearer <RELAY_ADMIN_SECRET>`, IP-restricted to the API server's IP.
+
+##### `POST /admin/allow`
+
+```json
+{ "pubkey": "ab3f..." }
+```
+→ `201 Created` or `200 OK` (already exists)
+
+##### `DELETE /admin/allow`
+
+```json
+{ "pubkey": "ab3f..." }
+```
+→ `200 OK` or `404 Not Found`
+
+##### `GET /admin/allow`
+
+→ `200 OK`
+```json
+{
+  "pubkeys": ["ab3f...", "cd5e...", "ef78..."],
+  "count": 3
+}
+```
+
+##### `POST /admin/allow/sync`
+
+Full reconciliation — the API sends the complete list, relay replaces its allowlist. Use for recovery, startup, or periodic consistency checks.
+
+```json
+{
+  "pubkeys": ["ab3f...", "cd5e...", "ef78..."]
+}
+```
+→ `200 OK`
+```json
+{
+  "added": 2,
+  "removed": 1,
+  "total": 3
+}
+```
+
+#### Consistency guarantees
+
+The relay's allowlist can drift if the API fails to reach the relay during a user lifecycle event. To handle this:
+
+1. **Retry queue**: failed allowlist updates go into a retry queue (in-memory with JSONL persistence). Retried with exponential backoff.
+2. **Periodic full sync**: the API runs `/admin/allow/sync` on a schedule (e.g. every hour) to reconcile any drift.
+3. **Startup sync**: on API boot, run a full sync before accepting requests.
+
+This is eventually consistent by design. The relay might briefly allow a deactivated user's pubkey or reject a new user's pubkey, but the window is small and self-healing.
+
+#### Relay-side implementation
+
+The relay stores the allowlist in memory (loaded from a file or embedded DB on startup). On each incoming EVENT:
+
+```go
+// Khatru RejectEvent hook
+func rejectEvent(ctx context.Context, event *nostr.Event) (bool, string) {
+    if !allowlist.Contains(event.PubKey) {
+        return true, "pubkey not authorized"
+    }
+    return false, ""
+}
+```
+
+The admin HTTP handler updates the in-memory set and persists to disk.
 
 ### Fan-out
 
@@ -185,10 +291,15 @@ NSEC_MASTER_KEY=<64-char hex string>  # 32 bytes, generate with: openssl rand -h
 
 # Relay
 NOSTR_RELAY_URL=wss://relay.commonshub.brussels
+NOSTR_RELAY_ADMIN_URL=https://relay.commonshub.brussels/admin
+NOSTR_RELAY_ADMIN_SECRET=<shared secret for relay admin API>
 NOSTR_PUBLIC_RELAYS=wss://relay.damus.io,wss://nos.lol,wss://relay.primal.net
 
 # Feature flag
 NOSTR_ENABLED=true  # Enable/disable Nostr event publishing
+
+# Sync
+NOSTR_ALLOWLIST_SYNC_INTERVAL=3600  # Full sync every N seconds (default: 1 hour)
 ```
 
 ## Implementation Plan
