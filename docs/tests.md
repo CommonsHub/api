@@ -72,7 +72,8 @@ Test full HTTP request → response cycles against a real (but isolated) API ins
 - `POST /v1/rooms/:roomId/book` → creates event, returns 200
 - `POST /v1/rooms/:roomId/book` (conflict) → returns 409
 - `GET /v1/rooms/:roomId/availability` → correct available slots
-- Auth: unsigned request → 401, bad signature → 401, valid signature → 200
+- Auth: no bearer → 401, invalid secret → 401, valid secret → 200
+- App lifecycle: register → use → revoke → rejected
 - Device flow: create code → verify → poll → get token
 - Prepared actions: prepare → get details → execute → verify completed
 
@@ -135,17 +136,18 @@ These must always pass. If any fails, deployment should be blocked.
 - [ ] Cancel fails for non-owner (403)
 - [ ] Availability correctly shows free slots around existing bookings
 
-### Auth
-- [ ] Valid bot signature passes
-- [ ] Invalid/expired bot signature returns 401
-- [ ] Replay attack (old timestamp) returns 401
+### Apps & Auth
+- [ ] App registration returns appId + appSecret (admin only)
+- [ ] App secret is shown once, stored as hash
+- [ ] Valid app secret authenticates requests
+- [ ] Invalid/revoked app secret returns 401
+- [ ] Revoked app is immediately rejected
+- [ ] X-User-Id is required for user-scoped endpoints
+- [ ] Admin API key grants admin access
 - [ ] Device code creation returns 6-digit code
 - [ ] Device code expires after 15 minutes
 - [ ] Device code is single-use
-- [ ] Valid bearer token grants access
-- [ ] Expired/revoked token returns 401
-- [ ] API key authentication works
-- [ ] Scoped API key can't access out-of-scope endpoints
+- [ ] Rate limit: max 5 attempts per device code
 
 ### Prepared Actions
 - [ ] Prepare returns actionId and confirmUrl

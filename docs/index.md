@@ -8,31 +8,93 @@ All responses are JSON. Errors return `{ "error": "message" }` with appropriate 
 
 ## Authentication
 
-### Discord Bot Authentication
+The API is identity-provider agnostic. It doesn't know or care about Discord, Telegram, or any specific platform. Instead, it trusts **registered apps** to vouch for their users.
 
-The Discord bot signs requests with a shared secret (`X-Bot-Signature` header). The request body includes the Discord user ID, which the API trusts because the bot has already verified the user's identity through Discord.
+### How it works
+
+1. An **app** (Discord bot, CLI, agent) registers with the API and receives credentials
+2. The app authenticates its users however it wants (Discord OAuth, device code, etc.)
+3. The app calls the API on behalf of the user
+
+Every authenticated request includes:
 
 ```
-POST /v1/shifts/2026-03-19/0/signup
-X-Bot-Signature: sha256=<hmac of request body>
-Content-Type: application/json
+Authorization: Bearer <appSecret>
+X-User-Id: <userId>
+```
 
+The API trusts the app to have verified the user's identity. The `userId` is an API-level identifier (not a Discord ID or platform-specific ID).
+
+### User identity
+
+Users are created when they first interact through any approved app. The app provides:
+- A unique user ID (the app can use its own platform ID, e.g. Discord user ID)
+- Display name and username
+
+The API maintains a unified user record across all apps.
+
+---
+
+## Apps
+
+### `POST /v1/apps`
+
+Register a new app. **Admin only** (requires master API key).
+
+**Request:**
+```json
 {
-  "userId": "849888126",
-  "email": "xavier@example.com"
+  "name": "ElinorBot"
 }
 ```
 
-### Device Authorization Flow (CLI)
+**Response:**
+```json
+{
+  "appId": "app_abc123",
+  "appSecret": "chb_sk_live_x7k9...",
+  "name": "ElinorBot",
+  "createdAt": "2026-03-18T16:00:00Z"
+}
+```
 
-For the `chb` CLI tool. Similar to how `gh auth login` works:
+⚠️ The `appSecret` is shown **once**. Store it securely. The API only stores a hash.
 
-1. CLI calls `POST /v1/auth/device` → gets a `deviceCode` and `userCode` (6 digits)
+### `GET /v1/apps`
+
+List registered apps. Admin only.
+
+**Response:**
+```json
+{
+  "apps": [
+    {
+      "appId": "app_abc123",
+      "name": "ElinorBot",
+      "createdAt": "2026-03-18T16:00:00Z",
+      "lastUsedAt": "2026-03-18T16:30:00Z"
+    }
+  ]
+}
+```
+
+### `DELETE /v1/apps/:appId`
+
+Revoke an app. Admin only. All requests using this app's secret will immediately return 401.
+
+---
+
+## Device Authorization Flow (CLI)
+
+The CLI authenticates users directly against the API — no Discord needed.
+
+**Prerequisite:** User must already have an API account (created via any app, e.g. Discord bot).
+
+1. CLI calls `POST /v1/auth/device` with its app credentials → gets `deviceCode` + `userCode` (6 digits)
 2. CLI displays: "Open https://api.commonshub.brussels/auth/verify and enter code: 482901"
-3. User opens the URL in their browser, logs in with Discord OAuth2, enters the 6-digit code
+3. User opens the URL, logs in (email, existing session, etc.), enters the code
 4. CLI polls `GET /v1/auth/device/:deviceCode` until status is `"approved"`
-5. API returns a long-lived bearer token tied to the user's Discord identity
-6. CLI stores the token locally (`~/.config/chb/token`)
+5. API returns a user-scoped token the CLI uses for subsequent requests
 
 ```bash
 $ chb login
@@ -41,13 +103,60 @@ Waiting for authorization... ✓
 Logged in as Xavier Damman (@xdamman)
 ```
 
-### API Key Authentication
+### `POST /v1/auth/device`
 
-For server-to-server calls. API keys are generated in the admin interface or via CLI.
+Start a device authorization flow.
 
+**Request:**
 ```
-Authorization: Bearer chb_sk_live_abc123...
+Authorization: Bearer <appSecret>
 ```
+
+**Response:**
+```json
+{
+  "deviceCode": "dev_abc123",
+  "userCode": "482901",
+  "verifyUrl": "https://api.commonshub.brussels/auth/verify",
+  "expiresIn": 900
+}
+```
+
+### `GET /v1/auth/device/:deviceCode`
+
+Poll for authorization status.
+
+**Response (pending):**
+```json
+{ "status": "pending" }
+```
+
+**Response (approved):**
+```json
+{
+  "status": "approved",
+  "userId": "u_849888126",
+  "token": "chb_ut_...",
+  "displayName": "Xavier Damman"
+}
+```
+
+### `POST /v1/auth/verify`
+
+Verify a device code. Called from the browser after user logs in.
+
+**Request:**
+```json
+{
+  "userCode": "482901"
+}
+```
+
+Device codes:
+- 6 digits, numeric
+- Expire after 15 minutes
+- Single use
+- Rate limited: max 5 attempts per code
 
 ---
 
@@ -165,7 +274,7 @@ List shifts for a date range.
       "maxSignups": 3,
       "signups": [
         {
-          "userId": "849888126",
+          "userId": "u_849888126",
           "username": "xdamman",
           "displayName": "Xavier Damman",
           "signedUpAt": "18/03/2026 14:15"
@@ -187,7 +296,7 @@ List shifts for a date range.
 
 ### `GET /v1/shifts/:date`
 
-Same as above but for a single date. Shorthand for `GET /v1/shifts?date=2026-03-19`.
+Same as above but for a single date.
 
 ### `POST /v1/shifts/:date/:slotIndex/signup`
 
@@ -227,12 +336,12 @@ Cancel a shift signup.
 
 ### `POST /v1/shifts/:date/:slotIndex/reward`
 
-Mint token rewards for shift participants. Requires `CHT-minter` role.
+Mint token rewards for shift participants. Requires minter role.
 
 **Request:**
 ```json
 {
-  "participants": ["849888126", "123456789"],
+  "participants": ["u_849888126", "u_123456789"],
   "amountPerUser": 3,
   "token": "CHT"
 }
@@ -243,7 +352,7 @@ Mint token rewards for shift participants. Requires `CHT-minter` role.
 {
   "results": [
     {
-      "userId": "849888126",
+      "userId": "u_849888126",
       "username": "xdamman",
       "amount": 3,
       "txHash": "0xabc...",
@@ -264,12 +373,12 @@ Get the authenticated user's profile.
 **Response:**
 ```json
 {
-  "userId": "849888126",
+  "userId": "u_849888126",
   "username": "xdamman",
   "displayName": "Xavier Damman",
   "email": "xavier@example.com",
   "walletAddress": "0x1234...",
-  "roles": ["CHT-minter", "shifts-master"]
+  "roles": ["minter", "admin"]
 }
 ```
 
@@ -291,9 +400,9 @@ Get a user's public profile (username, displayName, roles). No email or wallet.
 
 ---
 
-## Prepared Actions (for Discord bot integration)
+## Prepared Actions
 
-ElinorBot (or any agent) can prepare an action and generate a confirmation link that drops the Discord user directly into the final "confirm" step.
+Any app (ElinorBot, agent) can prepare an action for a user to confirm. This lets an AI agent set everything up, then the user just clicks "Confirm".
 
 ### `POST /v1/actions/prepare`
 
@@ -303,10 +412,10 @@ Prepare an action for a user to confirm.
 ```json
 {
   "action": "shift_signup",
+  "userId": "u_849888126",
   "params": {
     "date": "2026-03-19",
-    "slotIndex": 0,
-    "userId": "849888126"
+    "slotIndex": 0
   },
   "expiresIn": 3600
 }
@@ -321,15 +430,43 @@ Prepare an action for a user to confirm.
 }
 ```
 
-The Discord bot can then show a single "✅ Confirm" button that calls `POST /v1/actions/:actionId/execute`. The action is pre-validated — the user just confirms.
+The calling app (e.g. Discord bot) shows a single "✅ Confirm" button that triggers execution.
 
 ### `GET /v1/actions/:actionId`
 
 Get action details (for showing the confirmation UI).
 
+**Response:**
+```json
+{
+  "actionId": "act_abc123",
+  "action": "shift_signup",
+  "params": { "date": "2026-03-19", "slotIndex": 0 },
+  "userId": "u_849888126",
+  "status": "pending",
+  "expiresAt": "2026-03-19T17:00:00Z"
+}
+```
+
 ### `POST /v1/actions/:actionId/execute`
 
-Execute a prepared action. Must be called by the same user the action was prepared for.
+Execute a prepared action. Must be called by (or on behalf of) the target user.
+
+**Response:**
+```json
+{
+  "ok": true,
+  "result": {
+    "slot": { "start": "08:30", "end": "11:30" },
+    "date": "2026-03-19",
+    "spotsLeft": 1
+  }
+}
+```
+
+**Errors:**
+- `403` — wrong user
+- `410 Gone` — expired or already executed
 
 ---
 
@@ -347,9 +484,11 @@ All errors follow this format:
 
 Standard error codes:
 - `400` — bad request (missing params, invalid format)
-- `401` — not authenticated
-- `403` — not authorized (wrong role, not your booking)
+- `401` — not authenticated (missing/invalid app credentials)
+- `403` — not authorized (wrong user, missing role)
 - `404` — resource not found
 - `409` — conflict (already booked, already signed up)
+- `410` — gone (expired action)
 - `422` — unprocessable (slot full, invalid state)
+- `429` — rate limited
 - `500` — server error

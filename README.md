@@ -11,9 +11,20 @@ A shared backend that powers:
 - **CLI tool** (`chb`) — quick commands from your terminal
 - **OpenClaw agents** — AI-powered automation
 
-The API is the single source of truth. Clients are thin frontends.
+The API is the single source of truth. Clients are thin frontends. The API is identity-provider agnostic — it trusts registered apps to vouch for their users.
 
 ## Endpoints
+
+### Apps & Auth
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/apps` | Register an app (admin only) |
+| `GET` | `/apps` | List registered apps (admin only) |
+| `DELETE` | `/apps/:appId` | Revoke an app (admin only) |
+| `POST` | `/auth/device` | Start device auth flow (for CLI) |
+| `GET` | `/auth/device/:code` | Poll device auth status |
+| `POST` | `/auth/verify` | Verify a 6-digit code |
 
 ### Rooms
 
@@ -28,67 +39,55 @@ The API is the single source of truth. Clients are thin frontends.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/shifts` | List shifts (with signups) for a date range |
+| `GET` | `/shifts` | List shifts for a date range |
 | `GET` | `/shifts/:date` | Get shift slots for a specific date |
 | `POST` | `/shifts/:date/:slotIndex/signup` | Sign up for a shift |
 | `DELETE` | `/shifts/:date/:slotIndex/signup` | Cancel a shift signup |
-| `POST` | `/shifts/:date/:slotIndex/reward` | Mint token rewards for a shift |
+| `POST` | `/shifts/:date/:slotIndex/reward` | Mint token rewards |
 
 ### Users
 
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/users/me` | Get current user profile |
-| `PUT` | `/users/me` | Update profile (email, wallet address) |
+| `PUT` | `/users/me` | Update profile (email, wallet) |
 | `GET` | `/users/:userId` | Get a user's public profile |
 
-### Auth
+### Prepared Actions
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/auth/discord` | Authenticate via Discord OAuth2 |
-| `POST` | `/auth/device` | Start device auth flow (for CLI) |
-| `GET` | `/auth/device/:code` | Check device auth status |
-| `POST` | `/auth/verify` | Verify a 6-digit code (device flow) |
+| `POST` | `/actions/prepare` | Prepare an action for user confirmation |
+| `GET` | `/actions/:actionId` | Get action details |
+| `POST` | `/actions/:actionId/execute` | Execute a prepared action |
 
 ## Authentication
 
-Three auth methods depending on the client:
+Apps register with the API and get credentials. Each request includes:
 
-1. **Discord bot** — signs requests with a shared secret. The bot vouches for the user's identity (Discord user ID is trusted).
-2. **CLI** — device authorization flow. User runs `chb login`, gets a 6-digit code, opens a webpage, enters the code to link their CLI session to their Discord account.
-3. **API key** — for server-to-server calls (OpenClaw agents, admin scripts).
+```
+Authorization: Bearer <appSecret>
+X-User-Id: <userId>
+```
 
-All authenticated requests include an `Authorization` header:
-```
-Authorization: Bearer <token>
-```
+The API trusts the app to vouch for the user's identity. See [docs/index.md](docs/index.md) for details on app registration, device flow, and admin access.
 
 ## Quick start
 
 ```bash
-# Install dependencies
 bun install
-
-# Configure
-cp .env.example .env
-# Edit .env with your credentials
-
-# Run
+cp .env.example .env  # Edit with your credentials
 bun run dev
-
-# Run tests
 bun test
 ```
 
 ## Docs
 
-- [API Reference](/docs) — full endpoint documentation
-- [Technical Specs](/docs/specs) — stack, dependencies, architecture
-- [Tests](/docs/tests) — testing strategy and coverage
+- [API Reference](docs/index.md) — full endpoint documentation
+- [Technical Specs](docs/specs.md) — stack, dependencies, architecture
+- [Tests](docs/tests.md) — testing strategy and coverage
 
-Live docs: `https://api.commonshub.brussels/docs`
-
+Live docs: `https://api.commonshub.brussels/docs`  
 Append `.md` to any docs URL to get the raw markdown.
 
 ## License

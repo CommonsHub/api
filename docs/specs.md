@@ -10,7 +10,6 @@
 | Data | **JSONL files** | Simple, human-readable, append-only, easy to debug. SQLite as upgrade path if needed |
 | Calendar | **Google Calendar API** (googleapis) | Existing integration, service account auth |
 | Blockchain | **viem** | ERC20 minting for shift rewards (CHT token) |
-| Auth | **Discord OAuth2** + **HMAC signatures** + **device flow** | Three client types, three auth methods |
 | Docs | **Markdown → HTML** | Serve `/docs` as rendered HTML, `.md` extension for raw markdown |
 
 ## Project Structure
@@ -22,7 +21,7 @@ src/
 │   ├── rooms.ts          # Room booking endpoints
 │   ├── shifts.ts         # Shift signup endpoints
 │   ├── users.ts          # User profile endpoints
-│   ├── auth.ts           # Auth flows (Discord OAuth, device, API key)
+│   ├── auth.ts           # Device auth flow, app management
 │   ├── actions.ts        # Prepared action system
 │   └── docs.ts           # Docs serving (markdown → HTML)
 ├── services/
@@ -30,9 +29,10 @@ src/
 │   ├── shifts.ts         # Shift business logic
 │   ├── rooms.ts          # Room booking business logic
 │   ├── rewards.ts        # Token minting
-│   └── users.ts          # User store
+│   ├── users.ts          # User store
+│   └── apps.ts           # App registration and auth
 ├── middleware/
-│   ├── auth.ts           # Auth middleware (bearer, bot signature, API key)
+│   ├── auth.ts           # App auth middleware
 │   └── logging.ts        # Request logging
 ├── lib/
 │   ├── google-calendar.ts  # Google Calendar client
@@ -40,7 +40,7 @@ src/
 │   └── config.ts           # Environment config
 └── data/                  # Runtime data (gitignored)
     ├── users.jsonl
-    ├── sessions.jsonl     # Auth sessions
+    ├── apps.jsonl         # Registered apps (hashed secrets)
     ├── device-codes.jsonl # Pending device auth codes
     └── actions.jsonl      # Prepared actions
 ```
@@ -67,35 +67,49 @@ If JSONL becomes a bottleneck (>10k records, need complex queries):
 Each file is append-only JSONL. One JSON object per line.
 
 ```jsonl
-{"id":"u_1","discordUserId":"849888126","username":"xdamman","displayName":"Xavier Damman","email":"x@example.com","createdAt":"2026-03-18T15:00:00Z"}
-{"id":"u_1","discordUserId":"849888126","username":"xdamman","displayName":"Xavier Damman","email":"new@example.com","updatedAt":"2026-03-18T16:00:00Z"}
+{"id":"u_1","username":"xdamman","displayName":"Xavier Damman","email":"x@example.com","createdAt":"2026-03-18T15:00:00Z"}
+{"id":"u_1","username":"xdamman","displayName":"Xavier Damman","email":"new@example.com","updatedAt":"2026-03-18T16:00:00Z"}
 ```
 
 Updates are appended. On startup, the file is read and the latest entry per ID wins. Periodic compaction removes stale entries.
 
-## Authentication Details
+## Authentication Architecture
 
-### Discord Bot Signature
+The API is **identity-provider agnostic**. It doesn't know about Discord, Telegram, or any platform.
 
-The Discord bot (ElinorBot) signs requests using HMAC-SHA256 with a shared secret:
+### Apps
+
+Apps are external clients that connect to the API. Each app:
+- Registers once and receives an `appId` + `appSecret`
+- Authenticates requests with `Authorization: Bearer <appSecret>`
+- Vouches for its users via `X-User-Id` header
+- The API trusts the app to have verified the user's identity
 
 ```
-signature = HMAC-SHA256(sharedSecret, timestamp + "." + requestBody)
-X-Bot-Signature: sha256=<signature>
-X-Bot-Timestamp: <unix timestamp>
+App registers:
+  POST /v1/apps { name: "ElinorBot" }
+  → { appId: "app_abc", appSecret: "chb_sk_live_..." }  (secret shown once)
+
+App makes requests:
+  Authorization: Bearer chb_sk_live_...
+  X-User-Id: u_849888126
 ```
 
-The API verifies:
-1. Timestamp is within 5 minutes (prevent replay)
-2. Signature matches
-3. The `userId` in the body is trusted (bot already verified Discord identity)
+The `appSecret` is stored as a SHA-256 hash in `data/apps.jsonl`. The plaintext is never stored.
 
-### Device Authorization Flow
+### User identity
+
+Users are platform-agnostic. A user created via the Discord bot and a user created via CLI are the same entity if linked. Apps provide user metadata (display name, username) on first interaction.
+
+### Device flow (CLI)
+
+For headless clients that can't open a browser inline:
 
 ```
 CLI                    API                    Browser
  |                      |                      |
  |-- POST /auth/device->|                      |
+ |   (with app creds)   |                      |
  |<-- deviceCode,       |                      |
  |    userCode: 482901  |                      |
  |                      |                      |
@@ -103,28 +117,22 @@ CLI                    API                    Browser
  |  api.../auth/verify" |                      |
  |                      |                      |
  |                      |<-- User opens URL ---|
- |                      |--- Discord OAuth2 -->|
- |                      |<-- OAuth callback ---|
- |                      |<-- User enters code -|
- |                      |--- Code verified --->|
+ |                      |<-- Enters code ------|
+ |                      |--- Links to user --->|
  |                      |                      |
  |-- GET /auth/device/  |                      |
  |   :deviceCode ------>|                      |
- |<-- token: "chb_..." -|                      |
+ |<-- token, userId ----|                      |
 ```
 
-Device codes:
-- 6 digits, numeric
-- Expire after 15 minutes
-- Single use
-- Rate limited: max 5 attempts per code
+The user must already have an API account (created via any app). The device flow links a CLI session to that existing account.
 
-### API Keys
+### Admin access
 
-- Format: `chb_sk_live_<random>` (production) or `chb_sk_test_<random>` (dev)
-- Stored hashed (SHA-256) in `data/api-keys.jsonl`
-- Can be scoped to specific endpoints
-- Revocable
+A master API key (set via `ADMIN_API_KEY` env var) grants admin access for:
+- Registering/revoking apps
+- Managing users
+- Any endpoint without user context
 
 ## External Dependencies
 
@@ -135,7 +143,7 @@ Device codes:
 | `viem` | ^2.x | Ethereum interactions (ERC20 minting) |
 | `marked` | ^15.x | Markdown → HTML for docs |
 
-That's it. Four production dependencies.
+Four production dependencies.
 
 ## Configuration
 
@@ -146,14 +154,12 @@ All config via environment variables:
 PORT=3000
 BASE_URL=https://api.commonshub.brussels
 
+# Admin
+ADMIN_API_KEY=chb_admin_...   # Master key for app registration etc.
+
 # Google Calendar
 GOOGLE_ACCOUNT_KEY_FILEPATH=./google-account-key.json
 GOOGLE_CALENDAR_IMPERSONATE_USER=commonshub@opencollective.com
-
-# Discord OAuth2
-DISCORD_CLIENT_ID=...
-DISCORD_CLIENT_SECRET=...
-DISCORD_BOT_SECRET=...   # Shared secret for bot signature verification
 
 # Blockchain
 RPC_URL=https://...
@@ -176,6 +182,6 @@ DATA_DIR=./data
 1. **Single tenant**: This API serves one Commons Hub (Brussels). Multi-tenancy is not a goal.
 2. **Low traffic**: <100 requests/minute. No need for caching layers, queues, or horizontal scaling.
 3. **Google Calendar is the source of truth** for room bookings and shift events. The API reads/writes to Google Calendar directly.
-4. **Discord is the identity provider**. All users are identified by their Discord user ID. No separate user registration.
+4. **Platform agnostic**: Users can come from Discord, CLI, web, agents — the API doesn't care. Apps vouch for their users.
 5. **Token minting is slow** (~5-15 seconds per transaction). Reward endpoints should respond immediately and process minting asynchronously, returning tx hashes via polling or webhook.
-6. **The API and Discord bot run independently**. They share the same Google Calendar and blockchain but don't communicate directly. The bot can call the API, but the API doesn't call the bot.
+6. **The API and its clients are independent**. The Discord bot calls the API, but the API never calls the bot.
