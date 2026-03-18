@@ -141,11 +141,30 @@ Separate service (separate repo: `commonshub/relay`). Recommended implementation
 - [strfry](https://github.com/hoytech/strfry) — C++, high performance, good filtering
 - [pyramid](https://github.com/fiatjaf/pyramid) — Go, simpler, already familiar
 
-### Write policy
+### Access policy
 
-- **API service**: always allowed (publishes on behalf of users)
-- **Verified community members**: optionally allowed (if they export their key and use a native client)
-- **Everyone else**: read-only
+Reads and writes go over the same websocket connection, so firewall-level IP restrictions won't work — they'd block subscribers too.
+
+The relay itself enforces write policy:
+
+- **Reads (REQ/SUB)**: open to everyone — anyone can subscribe to community events
+- **Writes (EVENT)**: relay checks the event's pubkey against an allowlist
+
+```
+relay.commonshub.brussels
+├── REQ/SUB: open to all
+├── EVENT: pubkey must be in allowlist
+│   ├── Phase 1: only community npubs (API is the sole signer)
+│   └── Phase 2: + users with exported keys publishing directly
+└── Admin API (IP-restricted to API server):
+    ├── POST   /admin/allow   { npub }
+    ├── DELETE  /admin/allow   { npub }
+    └── GET    /admin/allow
+```
+
+The API manages the allowlist: when a user is created, their npub is added. When deactivated, it's removed. Implementation options:
+- **strfry**: [write policy plugin](https://github.com/hoytech/strfry/blob/master/docs/plugins.md) — script receives each EVENT, checks pubkey
+- **Khatru** (Go): `RejectEvent` hook for pubkey-based filtering
 
 ### Fan-out
 
