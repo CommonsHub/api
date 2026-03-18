@@ -10,6 +10,7 @@
 | Data | **JSONL files** | Simple, human-readable, append-only, easy to debug. SQLite as upgrade path if needed |
 | Calendar | **Google Calendar API** (googleapis) | Existing integration, service account auth |
 | Blockchain | **viem** | ERC20 minting for shift rewards (CHT token) |
+| Nostr | **nostr-tools** | Event creation, signing, relay publishing |
 | Docs | **Markdown → HTML** | Serve `/docs` as rendered HTML, `.md` extension for raw markdown |
 
 ## Project Structure
@@ -37,6 +38,8 @@ src/
 ├── lib/
 │   ├── google-calendar.ts  # Google Calendar client
 │   ├── blockchain.ts       # viem client, minting
+│   ├── nostr.ts            # Nostr key management, signing, publishing
+│   ├── crypto.ts           # Envelope encryption (AES-256-GCM)
 │   └── config.ts           # Environment config
 └── data/                  # Runtime data (gitignored)
     ├── users.jsonl
@@ -141,9 +144,10 @@ A master API key (set via `ADMIN_API_KEY` env var) grants admin access for:
 | `hono` | ^4.x | HTTP framework |
 | `googleapis` | ^144.x | Google Calendar API |
 | `viem` | ^2.x | Ethereum interactions (ERC20 minting) |
+| `nostr-tools` | ^2.x | Nostr event creation, signing, relay communication |
 | `marked` | ^15.x | Markdown → HTML for docs |
 
-Four production dependencies.
+Five production dependencies.
 
 ## Configuration
 
@@ -164,6 +168,11 @@ GOOGLE_CALENDAR_IMPERSONATE_USER=commonshub@opencollective.com
 # Blockchain
 RPC_URL=https://...
 MINTER_PRIVATE_KEY=0x...
+
+# Nostr
+NSEC_MASTER_KEY=...           # 32 bytes hex, for encrypting user nsecs
+NOSTR_RELAY_URL=wss://relay.commonshub.brussels
+NOSTR_ENABLED=true
 
 # Data
 DATA_DIR=./data
